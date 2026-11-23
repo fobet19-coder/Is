@@ -1,0 +1,849 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local PathfindingService = game:GetService("PathfindingService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+
+local player = Players.LocalPlayer
+local aimStateRemote = ReplicatedStorage:FindFirstChild("MD_AimState")
+
+-- ==========================================
+-- COORDENADAS FIJAS DE BLOCKSPIN
+-- ==========================================
+local POSICION_TRABAJO = Vector3.new(111.497, 255.207, -310.225)
+local POSICION_BANCO   = Vector3.new(178.786, 255.443, -237.481)
+
+-- ==========================================
+-- CONFIGURACIÓN Y ESTADOS
+-- ==========================================
+local estado = {
+    farmActivo = false,
+    autoDeposito = true,
+    evadirPeligro = true,
+    velocidad = 45,
+    montoDeposito = 500, -- Cantidad a depositar por defecto
+    ultimoSalto = 0,
+    ultimoGolpe = 0,
+    vidaAnterior = 100
+}
+
+-- ==========================================
+-- 1. INTERFAZ FLOTANTE (DELTA EXECUTOR)
+-- ==========================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "BlockSpinLamFarmGUI"
+screenGui.ResetOnSpawn = false
+pcall(function() screenGui.Parent = CoreGui end)
+if not screenGui.Parent then screenGui.Parent = player:WaitForChild("PlayerGui") end
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 245, 0, 255)
+frame.Position = UDim2.new(0.5, -122, 0.14, 0)
+frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+frame.Active = true
+frame.Draggable = true
+frame.Parent = screenGui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(50, 180, 120)
+stroke.Thickness = 1.5
+stroke.Parent = frame
+
+local titulo = Instance.new("TextLabel")
+titulo.Size = UDim2.new(1, 0, 0, 28)
+titulo.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+titulo.TextColor3 = Color3.fromRGB(80, 230, 150)
+titulo.Font = Enum.Font.GothamBlack
+titulo.TextSize = 13
+titulo.Text = "BLOCKSPIN FARM + BANCO"
+titulo.Parent = frame
+Instance.new("UICorner", titulo).CornerRadius = UDim.new(0, 10)
+
+local labelEstado = Instance.new("TextLabel")
+labelEstado.Size = UDim2.new(1, -16, 0, 22)
+labelEstado.Position = UDim2.new(0, 8, 0, 32)
+labelEstado.BackgroundTransparency = 1
+labelEstado.TextColor3 = Color3.fromRGB(190, 190, 200)
+labelEstado.Font = Enum.Font.Gotham
+labelEstado.TextSize = 11
+labelEstado.TextXAlignment = Enum.TextXAlignment.Left
+labelEstado.Text = "Estado: Listo"
+labelEstado.Parent = frame
+
+-- Botón principal ON/OFF
+local btnFarm = Instance.new("TextButton")
+btnFarm.Size = UDim2.new(1, -16, 0, 36)
+btnFarm.Position = UDim2.new(0, 8, 0, 56)
+btnFarm.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+btnFarm.TextColor3 = Color3.fromRGB(255, 255, 255)
+btnFarm.Font = Enum.Font.GothamBold
+btnFarm.TextSize = 13
+btnFarm.Text = "AUTO PUDDLE + BANCO: OFF"
+btnFarm.Parent = frame
+Instance.new("UICorner", btnFarm).CornerRadius = UDim.new(0, 6)
+
+-- Cuadro de texto para poner cuánto depositar
+local labelMonto = Instance.new("TextLabel")
+labelMonto.Size = UDim2.new(0.45, 0, 0, 28)
+labelMonto.Position = UDim2.new(0, 8, 0, 98)
+labelMonto.BackgroundTransparency = 1
+labelMonto.TextColor3 = Color3.fromRGB(210, 210, 215)
+labelMonto.Font = Enum.Font.GothamSemibold
+labelMonto.TextSize = 11
+labelMonto.TextXAlignment = Enum.TextXAlignment.Left
+labelMonto.Text = "Depositar ($):"
+labelMonto.Parent = frame
+
+local boxMonto = Instance.new("TextBox")
+boxMonto.Size = UDim2.new(0.5, -8, 0, 28)
+boxMonto.Position = UDim2.new(0.5, 0, 0, 98)
+boxMonto.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
+boxMonto.TextColor3 = Color3.fromRGB(100, 255, 140)
+boxMonto.Font = Enum.Font.GothamBold
+boxMonto.TextSize = 12
+boxMonto.Text = tostring(estado.montoDeposito)
+boxMonto.PlaceholderText = "Ej: 500"
+boxMonto.ClearTextOnFocus = false
+boxMonto.Parent = frame
+Instance.new("UICorner", boxMonto).CornerRadius = UDim.new(0, 6)
+
+-- Botón depositar ahora mismo
+local btnDepositarAhora = Instance.new("TextButton")
+btnDepositarAhora.Size = UDim2.new(1, -16, 0, 30)
+btnDepositarAhora.Position = UDim2.new(0, 8, 0, 132)
+btnDepositarAhora.BackgroundColor3 = Color3.fromRGB(38, 105, 175)
+btnDepositarAhora.TextColor3 = Color3.fromRGB(255, 255, 255)
+btnDepositarAhora.Font = Enum.Font.GothamBold
+btnDepositarAhora.TextSize = 11
+btnDepositarAhora.Text = "Ir al Cajero y Depositar Ahora"
+btnDepositarAhora.Parent = frame
+Instance.new("UICorner", btnDepositarAhora).CornerRadius = UDim.new(0, 6)
+
+-- Botón Anti-PvP
+local btnEscape = Instance.new("TextButton")
+btnEscape.Size = UDim2.new(1, -16, 0, 28)
+btnEscape.Position = UDim2.new(0, 8, 0, 168)
+btnEscape.BackgroundColor3 = Color3.fromRGB(35, 120, 65)
+btnEscape.TextColor3 = Color3.fromRGB(255, 255, 255)
+btnEscape.Font = Enum.Font.GothamSemibold
+btnEscape.TextSize = 11
+btnEscape.Text = "Anti-PvP (Huir si atacan): ON"
+btnEscape.Parent = frame
+Instance.new("UICorner", btnEscape).CornerRadius = UDim.new(0, 6)
+
+-- Controles de velocidad
+local btnMenos = Instance.new("TextButton")
+btnMenos.Size = UDim2.new(0, 40, 0, 30)
+btnMenos.Position = UDim2.new(0, 8, 0, 204)
+btnMenos.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+btnMenos.TextColor3 = Color3.fromRGB(255, 255, 255)
+btnMenos.Font = Enum.Font.GothamBold
+btnMenos.TextSize = 16
+btnMenos.Text = "-"
+btnMenos.Parent = frame
+Instance.new("UICorner", btnMenos).CornerRadius = UDim.new(0, 6)
+
+local labelVel = Instance.new("TextLabel")
+labelVel.Size = UDim2.new(1, -104, 0, 30)
+labelVel.Position = UDim2.new(0, 52, 0, 204)
+labelVel.BackgroundTransparency = 1
+labelVel.TextColor3 = Color3.fromRGB(230, 230, 235)
+labelVel.Font = Enum.Font.GothamBold
+labelVel.TextSize = 12
+labelVel.Text = "Velocidad: " .. estado.velocidad
+labelVel.Parent = frame
+
+local btnMas = Instance.new("TextButton")
+btnMas.Size = UDim2.new(0, 40, 0, 30)
+btnMas.Position = UDim2.new(1, -48, 0, 204)
+btnMas.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+btnMas.TextColor3 = Color3.fromRGB(255, 255, 255)
+btnMas.Font = Enum.Font.GothamBold
+btnMas.TextSize = 16
+btnMas.Text = "+"
+btnMas.Parent = frame
+Instance.new("UICorner", btnMas).CornerRadius = UDim.new(0, 6)
+
+-- ==========================================
+-- 2. HERRAMIENTAS, VENTANAS Y LECTURA DE DINERO
+-- ==========================================
+local function obtenerDineroActual()
+    -- 1. Busca en leaderstats
+    local ls = player:FindFirstChild("leaderstats")
+    if ls then
+        for _, v in ipairs(ls:GetChildren()) do
+            if v:IsA("IntValue") or v:IsA("NumberValue") then
+                local n = string.lower(v.Name)
+                if string.find(n, "cash") or string.find(n, "money") or string.find(n, "dinero") or string.find(n, "wallet") then
+                    return v.Value
+                end
+            end
+        end
+    end
+
+    -- 2. Busca en atributos del jugador
+    for k, v in pairs(player:GetAttributes()) do
+        if type(v) == "number" then
+            local n = string.lower(k)
+            if string.find(n, "cash") or string.find(n, "money") or string.find(n, "wallet") then
+                return v
+            end
+        end
+    end
+
+    -- 3. Busca en etiquetas de PlayerGui con signo "$" (ej: "$100")
+    local pGui = player:FindFirstChild("PlayerGui")
+    if pGui then
+        for _, lbl in ipairs(pGui:GetDescendants()) do
+            if lbl:IsA("TextLabel") and lbl.Visible and string.find(lbl.Text, "%$") then
+                local numStr = string.match(lbl.Text, "%$([%d,%.]+)")
+                if numStr then
+                    numStr = string.gsub(numStr, ",", "")
+                    local val = tonumber(numStr)
+                    if val then return val end
+                end
+            end
+        end
+    end
+
+    return 0
+end
+
+local function tieneHerramientaDeLimpieza()
+    local char = player.Character
+    local bp = player:FindFirstChild("Backpack")
+    local palabras = {"mop", "broom", "clean", "janitor", "sponge"}
+
+    for _, contenedor in ipairs({char, bp}) do
+        if contenedor then
+            for _, item in ipairs(contenedor:GetChildren()) do
+                if item:IsA("Tool") then
+                    local n = string.lower(item.Name)
+                    for _, p in ipairs(palabras) do
+                        if string.find(n, p) then return true end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function equiparHerramienta(palabras)
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not char or not hum then return nil end
+
+    local enMano = char:FindFirstChildOfClass("Tool")
+    if enMano then
+        local n = string.lower(enMano.Name)
+        for _, p in ipairs(palabras) do
+            if string.find(n, p) then return enMano end
+        end
+    end
+
+    local bp = player:FindFirstChild("Backpack")
+    if bp then
+        for _, item in ipairs(bp:GetChildren()) do
+            if item:IsA("Tool") then
+                local n = string.lower(item.Name)
+                for _, p in ipairs(palabras) do
+                    if string.find(n, p) then
+                        hum:EquipTool(item)
+                        return item
+                    end
+                end
+            end
+        end
+        local fallback = bp:FindFirstChildOfClass("Tool")
+        if fallback then
+            hum:EquipTool(fallback)
+            return fallback
+        end
+    end
+    return enMano
+end
+
+local function esVentana(obj)
+    if not obj or not obj:IsA("BasePart") or not obj.CanCollide then return false end
+    local n = string.lower(obj.Name)
+    local p = obj.Parent and string.lower(obj.Parent.Name) or ""
+    if string.find(n, "window") or string.find(n, "glass") or string.find(n, "ventana") or string.find(p, "window") or string.find(p, "glass") then
+        return true
+    end
+    return (obj.Material == Enum.Material.Glass or (obj.Transparency >= 0.15 and obj.Transparency <= 0.92))
+end
+
+local function revisarYRomperVentana(rootPart, char, dir)
+    local rp = RaycastParams.new()
+    rp.FilterDescendantsInstances = {char}
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+
+    local hit = Workspace:Raycast(rootPart.Position, dir * 6.5, rp)
+    if hit and hit.Instance and esVentana(hit.Instance) then
+        if tick() - estado.ultimoGolpe >= 0.25 then
+            estado.ultimoGolpe = tick()
+            local arma = equiparHerramienta({"punch", "fist", "puño", "bat", "crowbar", "melee", "combat"})
+            if aimStateRemote and aimStateRemote:IsA("RemoteEvent") then
+                pcall(function() aimStateRemote:FireServer(hit.Instance.Position, true) end)
+            end
+            if arma then
+                arma:Activate()
+            else
+                pcall(function()
+                    VirtualInputManager:SendMouseButtonEvent(500, 500, 0, true, game, 1)
+                    task.wait(0.04)
+                    VirtualInputManager:SendMouseButtonEvent(500, 500, 0, false, game, 1)
+                end)
+            end
+        end
+        return true
+    end
+    return false
+end
+
+-- ==========================================
+-- 3. MOVIMIENTO HÍBRIDO (ARRASTRE + CAMINATA NORMAL AL LLEGAR)
+-- ==========================================
+local function ejecutarSaltoValla(hum, rootPart)
+    if tick() - estado.ultimoSalto < 0.75 then return end
+    estado.ultimoSalto = tick()
+    hum:ChangeState(Enum.HumanoidStateType.Jumping)
+    local v = rootPart.AssemblyLinearVelocity
+    rootPart.AssemblyLinearVelocity = Vector3.new(v.X, math.max(hum.JumpPower, 55), v.Z)
+end
+
+local function revisarVallaEnfrente(rootPart, char, dir, paso)
+    local rp = RaycastParams.new()
+    rp.FilterDescendantsInstances = {char}
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+
+    local alcance = math.clamp(paso + 3.5, 4, 10)
+    local hitBajo = Workspace:Raycast(rootPart.Position - Vector3.new(0, 0.8, 0), dir * alcance, rp)
+    if not hitBajo or hitBajo.Normal.Y > 0.5 or esVentana(hitBajo.Instance) then
+        return false
+    end
+    local hitAlto = Workspace:Raycast(rootPart.Position + Vector3.new(0, 3.8, 0), dir * alcance, rp)
+    return (hitAlto == nil)
+end
+
+local function obtenerAlturaSuelo(posXZ, char, hum, rootPart)
+    local rp = RaycastParams.new()
+    rp.FilterDescendantsInstances = {char}
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+
+    local res = Workspace:Raycast(Vector3.new(posXZ.X, rootPart.Position.Y + 6, posXZ.Z), Vector3.new(0, -30, 0), rp)
+    if res then
+        return res.Position.Y + hum.HipHeight + (rootPart.Size.Y * 0.5)
+    end
+    return rootPart.Position.Y
+end
+
+-- Caminata normal al final (MoveTo) para evitar cosas cercanas y que abra el menú a la primera
+local function aproximacionNormalFinal(destinoPos, char, hum, rootPart)
+    hum.AutoRotate = true
+    rootPart.AssemblyLinearVelocity = Vector3.zero
+    rootPart.AssemblyAngularVelocity = Vector3.zero
+
+    -- Calcula ruta corta evitando muebles/mostradores cercanos
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2.5,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        WaypointSpacing = 4
+    })
+
+    local ok = pcall(function()
+        path:ComputeAsync(rootPart.Position, destinoPos)
+    end)
+
+    if ok and path.Status == Enum.PathStatus.Success then
+        local pts = path:GetWaypoints()
+        for i = 2, #pts do
+            if not estado.farmActivo then break end
+            if pts[i].Action == Enum.PathWaypointAction.Jump then
+                hum.Jump = true
+            end
+            hum:MoveTo(pts[i].Position)
+            local t0 = tick()
+            while (rootPart.Position - pts[i].Position).Magnitude > 2.5 and tick() - t0 < 2.0 do
+                task.wait(0.05)
+            end
+        end
+    else
+        hum:MoveTo(destinoPos)
+        local t0 = tick()
+        while (rootPart.Position - destinoPos).Magnitude > 3.0 and tick() - t0 < 2.5 do
+            task.wait(0.05)
+        end
+    end
+
+    hum:MoveTo(rootPart.Position)
+end
+
+local function moverHaciaPunto(destinoPos, objetivoInst, usarAproximacionNormal)
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+    if not hum or not rootPart then return end
+
+    -- Si ya está muy cerca y requiere aproximación normal, camina directo
+    if usarAproximacionNormal and (rootPart.Position - destinoPos).Magnitude <= 14 then
+        aproximacionNormalFinal(destinoPos, char, hum, rootPart)
+        return
+    end
+
+    hum.AutoRotate = false
+
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2.4,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentCanClimb = true,
+        WaypointSpacing = 12
+    })
+
+    local ok = pcall(function()
+        path:ComputeAsync(rootPart.Position, destinoPos)
+    end)
+
+    local waypoints = (ok and path.Status == Enum.PathStatus.Success) and path:GetWaypoints() or {
+        {Position = rootPart.Position, Action = Enum.PathWaypointAction.Walk},
+        {Position = destinoPos, Action = Enum.PathWaypointAction.Walk}
+    }
+
+    local timerAtasco = 0
+    local posCheck = rootPart.Position
+
+    for i = 2, #waypoints do
+        if not estado.farmActivo then break end
+        if objetivoInst and not objetivoInst.Parent then break end
+
+        -- Al entrar a menos de 13 studs del destino, cambia a caminata normal (MoveTo) para abrir menús a la primera
+        if usarAproximacionNormal and (rootPart.Position - destinoPos).Magnitude <= 13 then
+            aproximacionNormalFinal(destinoPos, char, hum, rootPart)
+            return
+        end
+
+        local wp = waypoints[i]
+        if wp.Action == Enum.PathWaypointAction.Jump then
+            ejecutarSaltoValla(hum, rootPart)
+        end
+
+        while estado.farmActivo and rootPart and rootPart.Parent do
+            local dt = RunService.Heartbeat:Wait()
+            rootPart.AssemblyAngularVelocity = Vector3.zero
+
+            if usarAproximacionNormal and (rootPart.Position - destinoPos).Magnitude <= 13 then
+                aproximacionNormalFinal(destinoPos, char, hum, rootPart)
+                return
+            end
+
+            -- Anti-PvP
+            if estado.evadirPeligro and hum.Health < estado.vidaAnterior then
+                estado.vidaAnterior = hum.Health
+                labelEstado.Text = "Estado: ¡Bajo ataque! Escapando..."
+                local dirEscape = -rootPart.CFrame.LookVector
+                for _ = 1, 35 do
+                    local dtEsc = RunService.Heartbeat:Wait()
+                    local pEsc = rootPart.Position + (dirEscape * (estado.velocidad * 1.35) * dtEsc)
+                    local yEsc = obtenerAlturaSuelo(pEsc, char, hum, rootPart)
+                    rootPart.CFrame = CFrame.lookAt(Vector3.new(pEsc.X, yEsc, pEsc.Z), Vector3.new(pEsc.X, yEsc, pEsc.Z) + dirEscape)
+                end
+                return
+            end
+            estado.vidaAnterior = hum.Health
+
+            local posActual = rootPart.Position
+            local objPlano = Vector3.new(wp.Position.X, posActual.Y, wp.Position.Z)
+            local vecPlano = objPlano - posActual
+            local dist = vecPlano.Magnitude
+            local paso = estado.velocidad * dt
+
+            if dist <= math.max(2.5, paso * 1.15) then
+                break
+            end
+
+            -- Anti-atasco con giro de 180°
+            timerAtasco = timerAtasco + dt
+            if timerAtasco >= 0.65 then
+                if (posActual - posCheck).Magnitude < 1.2 then
+                    local atras = -rootPart.CFrame.LookVector
+                    rootPart.CFrame = CFrame.lookAt(posActual, posActual + atras)
+                    if usarAproximacionNormal then
+                        aproximacionNormalFinal(destinoPos, char, hum, rootPart)
+                    end
+                    return
+                end
+                posCheck = posActual
+                timerAtasco = 0
+            end
+
+            local dirPlana = vecPlano.Unit
+            if revisarYRomperVentana(rootPart, char, dirPlana) then
+                continue
+            end
+
+            if revisarVallaEnfrente(rootPart, char, dirPlana, paso) then
+                ejecutarSaltoValla(hum, rootPart)
+            end
+
+            local sigXZ = posActual + (dirPlana * paso)
+            local enAire = (tick() - estado.ultimoSalto < 0.5)
+                or hum:GetState() == Enum.HumanoidStateType.Jumping
+                or hum:GetState() == Enum.HumanoidStateType.Freefall
+
+            local yFinal = enAire and posActual.Y or obtenerAlturaSuelo(sigXZ, char, hum, rootPart)
+            if not enAire then
+                rootPart.AssemblyLinearVelocity = Vector3.new(0, rootPart.AssemblyLinearVelocity.Y, 0)
+            end
+
+            local nuevaPos = Vector3.new(sigXZ.X, yFinal, sigXZ.Z)
+            local rotSuave = rootPart.CFrame.Rotation:Lerp(CFrame.lookAt(Vector3.zero, dirPlana).Rotation, 0.35)
+            rootPart.CFrame = CFrame.new(nuevaPos) * rotSuave
+        end
+    end
+
+    if usarAproximacionNormal then
+        aproximacionNormalFinal(destinoPos, char, hum, rootPart)
+    end
+end
+
+-- ==========================================
+-- 4. INTERACCIÓN CON TRABAJO Y BANCO (ATM)
+-- ==========================================
+local function activarInteractuablesCercanos(centroPos, radio)
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") and obj.Enabled and obj.Parent then
+            local posP = obj.Parent:IsA("BasePart") and obj.Parent.Position or (obj.Parent:IsA("Model") and obj.Parent:GetPivot().Position)
+            if posP and (posP - centroPos).Magnitude <= radio then
+                pcall(function()
+                    if fireproximityprompt then
+                        fireproximityprompt(obj)
+                    else
+                        obj:InputHoldBegin()
+                        task.wait(obj.HoldDuration + 0.1)
+                        obj:InputHoldEnd()
+                    end
+                end)
+            end
+        elseif obj:IsA("ClickDetector") and obj.Parent and obj.Parent:IsA("BasePart") then
+            if (obj.Parent.Position - centroPos).Magnitude <= radio and fireclickdetector then
+                pcall(function() fireclickdetector(obj) end)
+            end
+        end
+    end
+end
+
+local function pulsarBotonGui(botonGui)
+    if not botonGui or not botonGui.Visible then return end
+    -- Intenta disparar conexiones Lua de MouseButton1Click / Activated si el ejecutor soporta getconnections
+    if getconnections then
+        for _, sig in ipairs({"MouseButton1Click", "Activated"}) do
+            pcall(function()
+                for _, conn in ipairs(getconnections(botonGui[sig])) do
+                    conn:Fire()
+                end
+            end)
+        end
+    end
+    -- Respaldo por toque/clic en coordenadas exactas del botón en pantalla
+    local pos = botonGui.AbsolutePosition + (botonGui.AbsoluteSize * 0.5)
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y + 36, 0, true, game, 1)
+        task.wait(0.05)
+        VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y + 36, 0, false, game, 1)
+    end)
+end
+
+local function ejecutarDepositoEnCajero()
+    local char = player.Character
+    local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+
+    labelEstado.Text = "Yendo al cajero automático..."
+    moverHaciaPunto(POSICION_BANCO, nil, true)
+    task.wait(0.35)
+
+    -- Abre el menú del cajero ("Abrir cajero automático")
+    labelEstado.Text = "Abriendo menú del cajero..."
+    activarInteractuablesCercanos(POSICION_BANCO, 14)
+    task.wait(0.8)
+
+    local pGui = player:FindFirstChild("PlayerGui")
+    if not pGui then return end
+
+    local cantidadTexto = tostring(tonumber(boxMonto.Text) or estado.montoDeposito)
+    local cuadroEncontrado = nil
+    local botonDepositar = nil
+
+    -- Busca el cuadro de cantidad (TextBox) y el botón de Depositar en la interfaz abierta
+    for _, inst in ipairs(pGui:GetDescendants()) do
+        if inst:IsA("TextBox") and inst.Visible and not inst:IsDescendantOf(screenGui) then
+            cuadroEncontrado = inst
+        elseif (inst:IsA("TextButton") or inst:IsA("ImageButton")) and inst.Visible and not inst:IsDescendantOf(screenGui) then
+            local txt = ""
+            if inst:IsA("TextButton") then
+                txt = string.lower(inst.Text)
+            else
+                local subLbl = inst:FindFirstChildWhichIsA("TextLabel", true)
+                txt = subLbl and string.lower(subLbl.Text) or string.lower(inst.Name)
+            end
+
+            if string.find(txt, "deposit") or string.find(txt, "depositar") or string.find(txt, "ingresar") then
+                botonDepositar = inst
+            end
+        end
+    end
+
+    if cuadroEncontrado then
+        labelEstado.Text = "Poniendo $" .. cantidadTexto .. " en cajero..."
+        cuadroEncontrado:CaptureFocus()
+        task.wait(0.1)
+        cuadroEncontrado.Text = cantidadTexto
+        cuadroEncontrado:ReleaseFocus(true)
+        task.wait(0.3)
+    end
+
+    if botonDepositar then
+        labelEstado.Text = "Pulsando botón Depositar..."
+        pulsarBotonGui(botonDepositar)
+        task.wait(0.5)
+        labelEstado.Text = "Depósito completado ($" .. cantidadTexto .. ")"
+    else
+        labelEstado.Text = "Cajero abierto (revisa botón)"
+    end
+end
+
+local function tomarTrabajoEnPuesto()
+    labelEstado.Text = "Yendo al puesto de trabajo..."
+    moverHaciaPunto(POSICION_TRABAJO, nil, true)
+    task.wait(0.3)
+
+    labelEstado.Text = "Tomando trabajo..."
+    activarInteractuablesCercanos(POSICION_TRABAJO, 14)
+
+    -- Clic en pantalla por si el mostrador/NPC abre menú con clic directo
+    local cam = Workspace.CurrentCamera
+    local cx = cam and (cam.ViewportSize.X * 0.5) or 500
+    local cy = cam and (cam.ViewportSize.Y * 0.5) or 500
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+        task.wait(0.05)
+        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+    end)
+    task.wait(0.5)
+
+    -- Si se abrió un menú de selección de trabajo en PlayerGui, pulsa el botón de aceptar/limpieza
+    local pGui = player:FindFirstChild("PlayerGui")
+    if pGui then
+        for _, inst in ipairs(pGui:GetDescendants()) do
+            if inst:IsA("TextButton") and inst.Visible and not inst:IsDescendantOf(screenGui) then
+                local txt = string.lower(inst.Text)
+                if string.find(txt, "janitor") or string.find(txt, "clean") or string.find(txt, "limpi")
+                    or string.find(txt, "accept") or string.find(txt, "aceptar") or string.find(txt, "start") or string.find(txt, "work") then
+                    pulsarBotonGui(inst)
+                    task.wait(0.3)
+                    break
+                end
+            end
+        end
+    end
+end
+
+-- ==========================================
+-- 5. ESCÁNER Y LIMPIEZA DE PUDDLES
+-- ==========================================
+local function obtenerPosicionPuddle(inst)
+    if inst:IsA("BasePart") then
+        return inst.Position
+    elseif inst:IsA("Model") then
+        local primario = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart", true)
+        return primario and primario.Position or nil
+    end
+    return nil
+end
+
+local function buscarPuddleMasCercano(rootPart)
+    local mejorPos = nil
+    local mejorPuddle = nil
+    local menorDist = math.huge
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if (obj:IsA("BasePart") or obj:IsA("Model")) and not obj:IsDescendantOf(player.Character) then
+            local nombreLower = string.lower(obj.Name)
+            if string.find(nombreLower, "puddle") then
+                local esVisible = true
+                if obj:IsA("BasePart") and obj.Transparency >= 1 and not obj:FindFirstChildWhichIsA("ProximityPrompt", true) then
+                    esVisible = false
+                end
+
+                if esVisible then
+                    local pos = obtenerPosicionPuddle(obj)
+                    if pos then
+                        local dist = (pos - rootPart.Position).Magnitude
+                        if dist < menorDist then
+                            menorDist = dist
+                            mejorPos = pos
+                            mejorPuddle = obj
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return mejorPos, mejorPuddle, menorDist
+end
+
+local function limpiarPuddle(puddleObj)
+    if not puddleObj or not puddleObj.Parent then return end
+
+    labelEstado.Text = "Limpiando Puddle..."
+    local mop = equiparHerramienta({"mop", "broom", "clean", "janitor", "sponge"})
+
+    local intentos = 0
+    while estado.farmActivo and puddleObj and puddleObj.Parent and intentos < 15 do
+        intentos = intentos + 1
+        if puddleObj:IsA("BasePart") and puddleObj.Transparency >= 0.98 then
+            break
+        end
+
+        local prompt = puddleObj:FindFirstChildWhichIsA("ProximityPrompt", true)
+            or (puddleObj.Parent and puddleObj.Parent:FindFirstChildWhichIsA("ProximityPrompt"))
+
+        if prompt and prompt.Enabled then
+            pcall(function()
+                if fireproximityprompt then
+                    fireproximityprompt(prompt)
+                else
+                    prompt:InputHoldBegin()
+                    task.wait(prompt.HoldDuration + 0.1)
+                    prompt:InputHoldEnd()
+                end
+            end)
+        end
+
+        local click = puddleObj:FindFirstChildWhichIsA("ClickDetector", true)
+        if click and fireclickdetector then
+            pcall(function() fireclickdetector(click) end)
+        end
+
+        if mop then mop:Activate() end
+        task.wait(0.2)
+    end
+end
+
+-- ==========================================
+-- 6. BUCLE PRINCIPAL (TRABAJO + PUDDLE + BANCO)
+-- ==========================================
+local function iniciarCicloCompleto()
+    while estado.farmActivo do
+        local char = player.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+
+        if not hum or not rootPart or hum.Health <= 0 then
+            labelEstado.Text = "Esperando respawn..."
+            task.wait(1)
+            continue
+        end
+
+        estado.vidaAnterior = hum.Health
+        local metaDeposito = tonumber(boxMonto.Text) or estado.montoDeposito
+        local dineroActual = obtenerDineroActual()
+
+        -- 1. Si ya juntaste la cantidad configurada, va al cajero y deposita
+        if metaDeposito > 0 and dineroActual >= metaDeposito then
+            ejecutarDepositoEnCajero()
+            task.wait(0.5)
+            continue
+        end
+
+        -- 2. Si aún no tienes el trapeador (Mop), va con caminata normal al trabajo y lo toma
+        if not tieneHerramientaDeLimpieza() then
+            tomarTrabajoEnPuesto()
+            task.wait(0.3)
+            continue
+        end
+
+        -- 3. Busca y limpia el Puddle más cercano
+        local puddlePos, puddleObj, dist = buscarPuddleMasCercano(rootPart)
+        if puddlePos and puddleObj then
+            labelEstado.Text = string.format("Yendo a Puddle (%.0f studs)", dist)
+            moverHaciaPunto(puddlePos, puddleObj, true)
+            limpiarPuddle(puddleObj)
+        else
+            if (rootPart.Position - POSICION_TRABAJO).Magnitude > 50 then
+                labelEstado.Text = "Volviendo a zona de trabajo..."
+                moverHaciaPunto(POSICION_TRABAJO, nil, true)
+            else
+                labelEstado.Text = "Esperando Puddles ($" .. dineroActual .. "/" .. metaDeposito .. ")"
+                task.wait(0.5)
+            end
+        end
+        task.wait(0.1)
+    end
+
+    if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+        player.Character:FindFirstChildOfClass("Humanoid").AutoRotate = true
+    end
+    labelEstado.Text = "Estado: Detenido"
+end
+
+-- ==========================================
+-- 7. EVENTOS DE LA INTERFAZ
+-- ==========================================
+boxMonto.FocusLost:Connect(function()
+    local val = tonumber(boxMonto.Text)
+    if val and val > 0 then
+        estado.montoDeposito = val
+    else
+        boxMonto.Text = tostring(estado.montoDeposito)
+    end
+end)
+
+btnFarm.MouseButton1Click:Connect(function()
+    estado.farmActivo = not estado.farmActivo
+    if estado.farmActivo then
+        btnFarm.Text = "AUTO PUDDLE + BANCO: ON"
+        btnFarm.BackgroundColor3 = Color3.fromRGB(40, 155, 85)
+        task.spawn(iniciarCicloCompleto)
+    else
+        btnFarm.Text = "AUTO PUDDLE + BANCO: OFF"
+        btnFarm.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+    end
+end)
+
+btnDepositarAhora.MouseButton1Click:Connect(function()
+    task.spawn(function()
+        local estabaActivo = estado.farmActivo
+        estado.farmActivo = true
+        ejecutarDepositoEnCajero()
+        if not estabaActivo then
+            estado.farmActivo = false
+            if player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+                player.Character:FindFirstChildOfClass("Humanoid").AutoRotate = true
+            end
+        end
+    end)
+end)
+
+btnEscape.MouseButton1Click:Connect(function()
+    estado.evadirPeligro = not estado.evadirPeligro
+    btnEscape.Text = estado.evadirPeligro and "Anti-PvP (Huir si atacan): ON" or "Anti-PvP (Huir si atacan): OFF"
+    btnEscape.BackgroundColor3 = estado.evadirPeligro and Color3.fromRGB(35, 120, 65) or Color3.fromRGB(60, 60, 68)
+end)
+
+btnMas.MouseButton1Click:Connect(function()
+    estado.velocidad = estado.velocidad + 15
+    labelVel.Text = "Velocidad: " .. estado.velocidad
+end)
+
+btnMenos.MouseButton1Click:Connect(function()
+    estado.velocidad = math.max(20, estado.velocidad - 15)
+    labelVel.Text = "Velocidad: " .. estado.velocidad
+end)
